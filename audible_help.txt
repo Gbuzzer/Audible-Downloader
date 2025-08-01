@@ -1,0 +1,21 @@
+Usage: python -m audible_cli [OPTIONS] COMMAND [ARGS]...
+
+  Entrypoint for all other subcommands and groups.
+
+Options:
+  -P, --profile TEXT   The profile to use instead primary profile (case
+                       sensitive!).
+  -p, --password TEXT  The password for the profile auth file.
+  --version            Show the version and exit.
+  -v, --verbosity LVL  Either CRITICAL, ERROR, WARNING, INFO or DEBUG.
+                       [default: INFO]
+  -h, --help           Show this message and exit.
+
+Commands:
+  activation-bytes  Get activation bytes.
+  api               Send requests to an Audible API endpoint
+  download          download audiobook(s) from library
+  library           interact with library
+  manage            manage audible-cli
+  quickstart        Quick setup audible
+  wishlist          interact with wishlist

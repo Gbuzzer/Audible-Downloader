@@ -1,0 +1,7 @@
+Usage: python -m audible_cli activation-bytes [OPTIONS]
+
+  Get activation bytes.
+
+Options:
+  -r, --reload  Reload activation bytes and save to auth file.
+  -h, --help    Show this message and exit.

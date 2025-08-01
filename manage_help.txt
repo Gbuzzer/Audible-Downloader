@@ -1,0 +1,11 @@
+Usage: python -m audible_cli manage [OPTIONS] COMMAND [ARGS]...
+
+  manage audible-cli
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  auth-file  manage auth files
+  config     manage config
+  profile    manage profiles
