@@ -55,7 +55,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const errorContainer = document.getElementById('errorContainer');
     const errorMessage = document.getElementById('errorMessage');
     const convertBtn = document.getElementById('convertBtn');
-    const totalChunks = document.getElementById('totalChunks');
+    const chooseFileBtn = document.getElementById('chooseFileBtn');
     const totalSize = document.getElementById('totalSize');
     const downloadBtn = document.getElementById('downloadBtn');
     
@@ -82,8 +82,18 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    // Click to upload
-    uploadArea.addEventListener('click', function() {
+    // Click to upload (only when clicking the upload area itself, not the button)
+    uploadArea.addEventListener('click', function(e) {
+        // Don't trigger if clicking on the button or its children
+        if (e.target.tagName === 'BUTTON' || e.target.closest('button')) {
+            return;
+        }
+        fileInput.click();
+    });
+
+    // Choose File button click
+    chooseFileBtn.addEventListener('click', function(e) {
+        e.stopPropagation(); // Prevent event bubbling
         fileInput.click();
     });
 
@@ -150,14 +160,24 @@ document.addEventListener('DOMContentLoaded', function() {
         const formData = new FormData();
         formData.append('file', fileInput.files[0]);
         formData.append('activation_bytes', document.getElementById('activationBytes').value);
+        
+        // Get selected output format
+        const selectedFormat = document.querySelector('input[name="output_format"]:checked');
+        formData.append('output_format', selectedFormat ? selectedFormat.value : 'm4b');
 
-        // Simulate progress updates
+        // Simulate progress updates with realistic timing for large files
         let progress = 0;
         const progressInterval = setInterval(() => {
-            progress += Math.random() * 15;
-            if (progress > 90) progress = 90;
-            updateProgress(progress, 'Converting and splitting audio...');
-        }, 1000);
+            progress += Math.random() * 8;  // Slower progress for large files
+            if (progress > 85) progress = 85;  // Don't go too high until we know it's done
+            
+            // Update message based on progress
+            let message = 'Converting audio file...';
+            if (progress > 30) message = 'Processing audio data...';
+            if (progress > 60) message = 'Finalizing conversion...';
+            
+            updateProgress(progress, message);
+        }, 2000);  // Update every 2 seconds instead of 1
 
         // Upload file
         fetch('/upload', {
@@ -200,15 +220,31 @@ document.addEventListener('DOMContentLoaded', function() {
     function hideProgress() {
         progressContainer.classList.add('d-none');
         convertBtn.disabled = false;
-        convertBtn.innerHTML = '<i class="fas fa-magic me-2"></i>Convert to MP3';
+        convertBtn.innerHTML = '<i class="fas fa-magic me-2"></i>Convert Audio File';
     }
 
     // Show results
     function showResults(data) {
-        totalChunks.textContent = data.total_chunks;
         totalSize.textContent = data.total_size_mb + ' MB';
         downloadBtn.href = data.download_url;
-        downloadBtn.download = data.zip_name;
+        downloadBtn.download = data.filename;
+        
+        // Update format display
+        const outputFormat = document.getElementById('outputFormat');
+        if (outputFormat) {
+            outputFormat.textContent = data.output_format || 'MP3';
+        }
+        
+        // Show chunk button if file is large enough
+        const chunkBtn = document.getElementById('chunkBtn');
+        if (data.can_chunk) {
+            chunkBtn.classList.remove('d-none');
+            // Store filename for chunking
+            chunkBtn.dataset.filename = data.filename;
+        } else {
+            chunkBtn.classList.add('d-none');
+        }
+        
         resultContainer.classList.remove('d-none');
         
         // Scroll to results
@@ -218,6 +254,11 @@ document.addEventListener('DOMContentLoaded', function() {
     // Hide results
     function hideResults() {
         resultContainer.classList.add('d-none');
+        // Also hide chunk results
+        const chunkResultContainer = document.getElementById('chunkResultContainer');
+        const chunkingContainer = document.getElementById('chunkingContainer');
+        chunkResultContainer.classList.add('d-none');
+        chunkingContainer.classList.add('d-none');
     }
 
     // Show error
@@ -232,6 +273,77 @@ document.addEventListener('DOMContentLoaded', function() {
     // Hide error
     function hideError() {
         errorContainer.classList.add('d-none');
+    }
+    
+    // Chunk file function
+    window.chunkFile = function() {
+        const chunkBtn = document.getElementById('chunkBtn');
+        const filename = chunkBtn.dataset.filename;
+        
+        if (!filename) {
+            showError('No file available for chunking');
+            return;
+        }
+        
+        // Show chunking progress
+        const chunkingContainer = document.getElementById('chunkingContainer');
+        chunkingContainer.classList.remove('d-none');
+        
+        // Hide the original result and disable chunk button
+        chunkBtn.disabled = true;
+        chunkBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Chunking...';
+        
+        // Make request to chunk the file
+        fetch('/chunk-file', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ filename: filename })
+        })
+        .then(response => response.json())
+        .then(data => {
+            // Hide chunking progress
+            chunkingContainer.classList.add('d-none');
+            
+            if (data.success) {
+                // Show chunking results
+                showChunkResults(data);
+            } else {
+                showError(data.error || 'Chunking failed');
+                // Re-enable chunk button
+                chunkBtn.disabled = false;
+                chunkBtn.innerHTML = '<i class="fas fa-cut me-2"></i>Split into 24MB Chunks';
+            }
+        })
+        .catch(error => {
+            console.error('Chunking error:', error);
+            chunkingContainer.classList.add('d-none');
+            showError('Network error during chunking');
+            // Re-enable chunk button
+            chunkBtn.disabled = false;
+            chunkBtn.innerHTML = '<i class="fas fa-cut me-2"></i>Split into 24MB Chunks';
+        });
+    };
+    
+    // Show chunk results
+    function showChunkResults(data) {
+        const chunkCount = document.getElementById('chunkCount');
+        const chunkTotalSize = document.getElementById('chunkTotalSize');
+        const chunkDownloadBtn = document.getElementById('chunkDownloadBtn');
+        const chunkResultContainer = document.getElementById('chunkResultContainer');
+        
+        chunkCount.textContent = data.total_chunks;
+        chunkTotalSize.textContent = data.total_size_mb + ' MB';
+        chunkDownloadBtn.href = data.download_url;
+        chunkDownloadBtn.download = data.zip_name;
+        
+        // Hide the original result container and show chunk result
+        resultContainer.classList.add('d-none');
+        chunkResultContainer.classList.remove('d-none');
+        
+        // Scroll to chunk results
+        chunkResultContainer.scrollIntoView({ behavior: 'smooth' });
     }
 
     // Auto-hide alerts after 10 seconds
@@ -257,17 +369,7 @@ document.addEventListener('DOMContentLoaded', function() {
     observer.observe(resultContainer, { attributes: true });
 });
 
-// Activation Bytes Extraction Functions
-function showExtractionModal() {
-    const modal = new bootstrap.Modal(document.getElementById('extractionModal'));
-    modal.show();
-}
-
-function showBrowserInstructions() {
-    const modal = new bootstrap.Modal(document.getElementById('browserInstructionsModal'));
-    modal.show();
-}
-
+// Activation Bytes Functions
 function loadSavedActivationBytes() {
     fetch('/load-activation-bytes')
         .then(response => response.json())
@@ -285,278 +387,25 @@ function loadSavedActivationBytes() {
         });
 }
 
-function extractActivationBytes(method) {
-    const extractionStatus = document.getElementById('extractionStatus');
-    const extractionResult = document.getElementById('extractionResult');
-    const extractionStatusText = document.getElementById('extractionStatusText');
-    
-    // Show loading state
-    extractionStatus.classList.remove('d-none');
-    extractionResult.classList.add('d-none');
-    
-    const requestData = { method: method };
-    
-    // Update status text based on method
-    switch(method) {
-        case 'cli':
-            extractionStatusText.textContent = 'Using audible-cli to extract activation bytes...';
-            break;
-        case 'file':
-            extractionStatusText.textContent = 'Searching files for activation bytes...';
-            break;
-        case 'auth':
-            extractionStatusText.textContent = 'Authenticating with Audible...';
-            break;
-        default:
-            extractionStatusText.textContent = 'Extracting activation bytes...';
-    }
+function extractWithAudibleCli() {
+    showToast('🔄 Extracting activation bytes with audible-cli...', 'info');
     
     fetch('/extract-activation-bytes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestData)
+        body: JSON.stringify({ method: 'cli' })
     })
     .then(response => response.json())
     .then(data => {
-        extractionStatus.classList.add('d-none');
-        extractionResult.classList.remove('d-none');
-        
-        const extractionAlert = document.getElementById('extractionAlert');
-        const extractionMessage = document.getElementById('extractionMessage');
-        
         if (data.success) {
-            extractionAlert.className = 'alert alert-success';
-            extractionMessage.innerHTML = `
-                <i class="fas fa-check-circle me-2"></i>
-                <strong>Success!</strong> Activation bytes: <code>${data.activation_bytes}</code>
-            `;
             document.getElementById('activationBytes').value = data.activation_bytes;
             showToast('✅ Activation bytes extracted successfully!', 'success');
         } else {
-            extractionAlert.className = 'alert alert-warning';
-            let suggestions = '';
-            if (data.suggestions) {
-                suggestions = '<ul class="mb-0 mt-2">';
-                data.suggestions.forEach(suggestion => {
-                    suggestions += `<li>${suggestion}</li>`;
-                });
-                suggestions += '</ul>';
-            }
-            extractionMessage.innerHTML = `
-                <i class="fas fa-exclamation-triangle me-2"></i>
-                <strong>Could not extract activation bytes</strong><br>
-                ${data.error}
-                ${suggestions}
-            `;
-            showToast('⚠️ Could not extract activation bytes', 'warning');
+            showToast('❌ Could not extract activation bytes: ' + data.error, 'error');
         }
     })
     .catch(error => {
         console.error('Error extracting activation bytes:', error);
-        extractionStatus.classList.add('d-none');
-        extractionResult.classList.remove('d-none');
-        
-        const extractionAlert = document.getElementById('extractionAlert');
-        const extractionMessage = document.getElementById('extractionMessage');
-        
-        extractionAlert.className = 'alert alert-danger';
-        extractionMessage.innerHTML = `
-            <i class="fas fa-times-circle me-2"></i>
-            <strong>Error:</strong> ${error.message || 'Failed to extract activation bytes'}
-        `;
         showToast('❌ Error extracting activation bytes', 'error');
-    });
-}
-
-function extractWithCredentials() {
-    const email = document.getElementById('audibleEmail').value.trim();
-    const password = document.getElementById('audiblePassword').value.trim();
-    
-    if (!email || !password) {
-        showToast('❌ Please enter both email and password', 'error');
-        return;
-    }
-    
-    const extractionStatus = document.getElementById('extractionStatus');
-    const extractionResult = document.getElementById('extractionResult');
-    const extractionStatusText = document.getElementById('extractionStatusText');
-    
-    extractionStatus.classList.remove('d-none');
-    extractionResult.classList.add('d-none');
-    extractionStatusText.textContent = 'Authenticating with Audible...';
-    
-    fetch('/extract-activation-bytes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            method: 'auth',
-            email: email,
-            password: password
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        extractionStatus.classList.add('d-none');
-        extractionResult.classList.remove('d-none');
-        
-        const extractionAlert = document.getElementById('extractionAlert');
-        const extractionMessage = document.getElementById('extractionMessage');
-        
-        if (data.success) {
-            extractionAlert.className = 'alert alert-success';
-            extractionMessage.innerHTML = `
-                <i class="fas fa-check-circle me-2"></i>
-                <strong>Success!</strong> Activation bytes: <code>${data.activation_bytes}</code>
-            `;
-            document.getElementById('activationBytes').value = data.activation_bytes;
-            document.getElementById('audiblePassword').value = ''; // Clear password
-            showToast('✅ Activation bytes extracted successfully!', 'success');
-        } else {
-            extractionAlert.className = 'alert alert-danger';
-            extractionMessage.innerHTML = `
-                <i class="fas fa-times-circle me-2"></i>
-                <strong>Authentication failed:</strong> ${data.error}
-            `;
-            showToast('❌ Authentication failed', 'error');
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showToast('❌ Error during authentication', 'error');
-    });
-}
-
-function extractWithSelenium() {
-    const email = document.getElementById('audibleEmail').value.trim();
-    const password = document.getElementById('audiblePassword').value.trim();
-    const browser = document.getElementById('seleniumBrowser').value;
-    const debug = document.getElementById('seleniumDebug').checked;
-    
-    if (!email || !password) {
-        showToast('❌ Please enter both email and password', 'error');
-        return;
-    }
-    
-    const extractionStatus = document.getElementById('extractionStatus');
-    const extractionResult = document.getElementById('extractionResult');
-    const extractionStatusText = document.getElementById('extractionStatusText');
-    
-    extractionStatus.classList.remove('d-none');
-    extractionResult.classList.add('d-none');
-    extractionStatusText.textContent = 'Using Selenium to authenticate with Audible (this may take a moment)...';
-    
-    fetch('/extract-activation-bytes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            method: 'selenium',
-            email: email,
-            password: password,
-            browser: browser,
-            debug: debug
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        extractionStatus.classList.add('d-none');
-        extractionResult.classList.remove('d-none');
-        
-        const extractionAlert = document.getElementById('extractionAlert');
-        const extractionMessage = document.getElementById('extractionMessage');
-        
-        if (data.success) {
-            extractionAlert.className = 'alert alert-success';
-            extractionMessage.innerHTML = `
-                <i class="fas fa-check-circle me-2"></i>
-                <strong>Success!</strong> Activation bytes: <code>${data.activation_bytes}</code>
-                <br><small class="text-muted">Extracted using Selenium automation</small>
-            `;
-            document.getElementById('activationBytes').value = data.activation_bytes;
-            document.getElementById('audiblePassword').value = ''; // Clear password
-            showToast('✅ Activation bytes extracted with Selenium!', 'success');
-        } else {
-            extractionAlert.className = 'alert alert-danger';
-            let suggestions = '';
-            if (data.suggestions) {
-                suggestions = '<ul class="mb-0 mt-2">';
-                data.suggestions.forEach(suggestion => {
-                    suggestions += `<li>${suggestion}</li>`;
-                });
-                suggestions += '</ul>';
-            }
-            extractionMessage.innerHTML = `
-                <i class="fas fa-times-circle me-2"></i>
-                <strong>Selenium extraction failed:</strong> ${data.error}
-                ${suggestions}
-                <br><small class="text-muted mt-2 d-block">💡 Try the browser method or check if you have 2FA enabled</small>
-            `;
-            showToast('❌ Selenium extraction failed', 'error');
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        extractionStatus.classList.add('d-none');
-        extractionResult.classList.remove('d-none');
-        
-        const extractionAlert = document.getElementById('extractionAlert');
-        const extractionMessage = document.getElementById('extractionMessage');
-        
-        extractionAlert.className = 'alert alert-danger';
-        extractionMessage.innerHTML = `
-            <i class="fas fa-times-circle me-2"></i>
-            <strong>Error:</strong> ${error.message || 'Selenium extraction failed'}
-            <br><small class="text-muted mt-2 d-block">Make sure you have Chrome or Firefox installed. WebDriver will be automatically downloaded.</small>
-        `;
-        console.log("Calling showToast from general catch block.");
-        showToast('❌ Error during Selenium extraction', 'error');
-    });
-}
-
-function saveManualActivationBytes() {
-    const activationBytes = document.getElementById('manualActivationBytes').value.trim().toUpperCase();
-    
-    if (!activationBytes) {
-        showToast('❌ Please enter activation bytes', 'error');
-        return;
-    }
-    
-    if (activationBytes.length !== 8 || !/^[0-9A-F]{8}$/.test(activationBytes)) {
-        showToast('❌ Activation bytes must be 8 hexadecimal characters', 'error');
-        return;
-    }
-    
-    fetch('/extract-activation-bytes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            method: 'manual',
-            activation_bytes: activationBytes
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            document.getElementById('activationBytes').value = data.activation_bytes;
-            document.getElementById('manualActivationBytes').value = '';
-            
-            const extractionResult = document.getElementById('extractionResult');
-            const extractionAlert = document.getElementById('extractionAlert');
-            const extractionMessage = document.getElementById('extractionMessage');
-            
-            extractionResult.classList.remove('d-none');
-            extractionAlert.className = 'alert alert-success';
-            extractionMessage.innerHTML = `
-                <i class="fas fa-check-circle me-2"></i>
-                <strong>Saved!</strong> Activation bytes: <code>${data.activation_bytes}</code>
-            `;
-            showToast('✅ Activation bytes saved successfully!', 'success');
-        } else {
-            console.log("Calling showToast after Selenium failure:", data.error);
-            showToast('❌ ' + data.error, 'error');
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showToast('❌ Error saving activation bytes', 'error');
     });
 }

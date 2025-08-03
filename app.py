@@ -1,6 +1,7 @@
 import os
 import tempfile
 import shutil
+import logging
 from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -15,6 +16,9 @@ import math
 from datetime import datetime
 from dotenv import load_dotenv
 from activation_extractor import ActivationBytesExtractor
+
+# Setup logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Load environment variables
 load_dotenv()
@@ -73,38 +77,228 @@ def get_ffmpeg_commands():
     # Fallback to system commands
     return 'ffmpeg', 'ffprobe'
 
-def convert_audible_to_mp3(input_file, output_dir, activation_bytes=None):
-    """Convert Audible file to MP3 using ffmpeg"""
+def convert_audible_file(input_file, output_dir, activation_bytes=None, output_format='mp3'):
+    """Convert Audible file to specified format using ffmpeg with fallback methods"""
+    app.logger.info(f"Starting conversion of {input_file} to {output_format}")
+    
+    # First try the standard method
     try:
-        # Check if FFmpeg is available
-        ffmpeg_available, error_msg = check_ffmpeg_availability()
-        if not ffmpeg_available:
-            raise Exception(f"FFmpeg is required but not available: {error_msg}. Please install FFmpeg from https://ffmpeg.org/download.html and add it to your system PATH.")
+        app.logger.info("Attempting standard conversion method...")
+        return _convert_with_standard_method(input_file, output_dir, activation_bytes, output_format)
+    except Exception as e:
+        app.logger.warning(f"Standard conversion failed: {str(e)}")
+        app.logger.info("Trying fallback method for problematic AAC streams...")
         
-        base_name = os.path.splitext(os.path.basename(input_file))[0]
-        temp_mp3 = os.path.join(output_dir, f"{base_name}_temp.mp3")
+        # Try fallback method
+        try:
+            app.logger.info("Calling _convert_with_fallback_method...")
+            return _convert_with_fallback_method(input_file, output_dir, activation_bytes, output_format)
+        except Exception as fallback_error:
+            app.logger.error(f"All conversion methods failed. Standard error: {str(e)}, Fallback error: {str(fallback_error)}")
+            raise Exception(f"All conversion methods failed. This .aax file may use an incompatible DRM scheme or be corrupted. Last error: {str(fallback_error)}")
+
+def _convert_with_standard_method(input_file, output_dir, activation_bytes=None, output_format='mp3'):
+    """Standard conversion method"""
+    app.logger.info(f"*** STARTING STANDARD CONVERSION: {input_file} to {output_format} ***")
+    
+    # Check if FFmpeg is available
+    ffmpeg_available, error_msg = check_ffmpeg_availability()
+    if not ffmpeg_available:
+        raise Exception(f"FFmpeg is required but not available: {error_msg}. Please install FFmpeg from https://ffmpeg.org/download.html and add it to your system PATH.")
+    
+    base_name = os.path.splitext(os.path.basename(input_file))[0]
+    temp_output = os.path.join(output_dir, f"{base_name}_temp.{output_format}")
+    
+    # Get the correct FFmpeg command
+    ffmpeg_cmd, _ = get_ffmpeg_commands()
+    
+    # Build ffmpeg command - activation_bytes MUST come before -i
+    cmd = [ffmpeg_cmd]
+    if activation_bytes and input_file.lower().endswith('.aax'):
+        cmd.extend(['-activation_bytes', activation_bytes])
+    
+    # Add error resilience flags to handle AAC decoding issues
+    cmd.extend(['-err_detect', 'ignore_err', '-fflags', '+igndts+ignidx'])
+    cmd.extend(['-i', input_file])
+    
+    # Set codec and options based on output format
+    if output_format.lower() == 'mp3':
+        cmd.extend(['-c:a', 'libmp3lame', '-b:a', '128k'])
+    elif output_format.lower() == 'm4b':
+        # M4B format with AAC codec, preserving chapters
+        cmd.extend(['-c:a', 'aac', '-b:a', '128k', '-c:v', 'copy'])
+    else:
+        raise Exception(f"Unsupported output format: {output_format}")
+    
+    cmd.extend([temp_output, '-y'])
+    
+    app.logger.info(f"Running FFmpeg command: {' '.join(cmd)}")
+    
+    # Run conversion with proper stdin handling, encoding, and timeout
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, 
+                          stdin=subprocess.DEVNULL, timeout=900, 
+                          encoding='utf-8', errors='replace')  # Handle encoding issues
+    
+    if result.returncode != 0:
+        app.logger.error(f"FFmpeg command failed with return code {result.returncode}")
+        app.logger.error(f"FFmpeg stdout: {result.stdout}")
+        app.logger.error(f"FFmpeg stderr: {result.stderr}")
         
-        # Get the correct FFmpeg command
-        ffmpeg_cmd, _ = get_ffmpeg_commands()
+        # Provide more helpful error messages
+        error_msg = "FFmpeg conversion failed"
+        if result.stderr:
+            if "activation_bytes" in result.stderr.lower():
+                error_msg = "Invalid activation bytes - please check your activation bytes are correct for this file"
+            elif "invalid data" in result.stderr.lower():
+                error_msg = "Invalid or corrupted audio file - the .aax file may be damaged"
+            else:
+                error_msg = f"FFmpeg error: {result.stderr}"
+        elif result.returncode == 4294967274:  # Common Windows error code
+            error_msg = "FFmpeg process was terminated - this may be due to encoding issues or wrong activation bytes"
+        
+        raise Exception(error_msg)
+    
+    app.logger.info(f"FFmpeg conversion to {output_format.upper()} successful.")
+    return temp_output
+
+def _convert_with_standard_method_DISABLED(input_file, output_dir, activation_bytes=None, output_format='mp3'):
+    """Standard conversion method"""
+    # Check if FFmpeg is available
+    ffmpeg_available, error_msg = check_ffmpeg_availability()
+    if not ffmpeg_available:
+        raise Exception(f"FFmpeg is required but not available: {error_msg}. Please install FFmpeg from https://ffmpeg.org/download.html and add it to your system PATH.")
+    
+    base_name = os.path.splitext(os.path.basename(input_file))[0]
+    temp_output = os.path.join(output_dir, f"{base_name}_temp.{output_format}")
+    
+    # Get the correct FFmpeg command
+    ffmpeg_cmd, _ = get_ffmpeg_commands()
+    
+    # Build ffmpeg command - activation_bytes MUST come before -i
+    cmd = [ffmpeg_cmd]
+    if activation_bytes and input_file.lower().endswith('.aax'):
+        cmd.extend(['-activation_bytes', activation_bytes])
+    
+    cmd.extend(['-i', input_file])
+    
+    # Set codec and options based on output format
+    if output_format.lower() == 'mp3':
+        cmd.extend(['-c:a', 'libmp3lame', '-b:a', '128k'])
+    elif output_format.lower() == 'm4b':
+        # M4B format with AAC codec, preserving chapters
+        cmd.extend(['-c:a', 'aac', '-b:a', '128k', '-c:v', 'copy'])
+    else:
+        raise Exception(f"Unsupported output format: {output_format}")
+    
+    cmd.extend([temp_output, '-y'])
+    
+    app.logger.info(f"Running FFmpeg command: {' '.join(cmd)}")
+    
+    # Run conversion with proper stdin handling, encoding, and timeout
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, 
+                          stdin=subprocess.DEVNULL, timeout=900, 
+                          encoding='utf-8', errors='replace')  # Handle encoding issues
+    
+    if result.returncode != 0:
+        app.logger.error(f"FFmpeg command failed with return code {result.returncode}")
+        app.logger.error(f"FFmpeg stdout: {result.stdout}")
+        app.logger.error(f"FFmpeg stderr: {result.stderr}")
+        
+        # Provide more helpful error messages
+        error_msg = "FFmpeg conversion failed"
+        if result.stderr:
+            if "activation_bytes" in result.stderr.lower():
+                error_msg = "Invalid activation bytes - please check your activation bytes are correct for this file"
+            elif "invalid data" in result.stderr.lower():
+                error_msg = "Invalid or corrupted audio file - the .aax file may be damaged"
+            else:
+                error_msg = f"FFmpeg error: {result.stderr}"
+        elif result.returncode == 4294967274:  # Common Windows error code
+            error_msg = "FFmpeg process was terminated - this may be due to encoding issues or wrong activation bytes"
+        
+        raise Exception(error_msg)
+def _convert_with_fallback_method(input_file, output_dir, activation_bytes=None, output_format='mp3'):
+    """Fallback conversion method for older .aax files with problematic AAC streams"""
+    app.logger.info("Starting fallback conversion method...")
+    
+    # Check if FFmpeg is available
+    ffmpeg_available, error_msg = check_ffmpeg_availability()
+    if not ffmpeg_available:
+        raise Exception(f"FFmpeg is required but not available: {error_msg}")
+    
+    base_name = os.path.splitext(os.path.basename(input_file))[0]
+    temp_output = os.path.join(output_dir, f"{base_name}_fallback.{output_format}")
+    
+    # Get the correct FFmpeg command
+    ffmpeg_cmd, _ = get_ffmpeg_commands()
+    
+    # Try multiple fallback strategies
+    fallback_strategies = [
+        # Strategy 1: Maximum error tolerance with different decoder
+        {
+            'name': 'Max error tolerance + alternative decoder',
+            'extra_flags': ['-err_detect', 'ignore_err', '-fflags', '+igndts+ignidx+genpts', 
+                          '-max_muxing_queue_size', '4096', '-probesize', '50M', '-analyzeduration', '100M']
+        },
+        # Strategy 2: Force stream copy first, then convert
+        {
+            'name': 'Two-pass: extract then convert',
+            'extra_flags': ['-c', 'copy', '-avoid_negative_ts', 'make_zero', '-fflags', '+genpts']
+        },
+        # Strategy 3: Use different audio decoder with error resilience
+        {
+            'name': 'Alternative audio processing',
+            'extra_flags': ['-err_detect', 'ignore_err', '-fflags', '+igndts+ignidx', 
+                          '-ac', '2', '-ar', '44100', '-threads', '1']
+        },
+        # Strategy 4: Minimal processing with raw extraction
+        {
+            'name': 'Minimal processing extraction',
+            'extra_flags': ['-vn', '-sn', '-dn', '-ignore_unknown', '-f', output_format]
+        }
+    ]
+    
+    for strategy in fallback_strategies:
+        app.logger.info(f"Trying fallback strategy: {strategy['name']}")
         
         # Build ffmpeg command
-        cmd = [ffmpeg_cmd, '-i', input_file]
-        
-        # Add activation bytes if provided (for .aax files)
+        cmd = [ffmpeg_cmd]
         if activation_bytes and input_file.lower().endswith('.aax'):
             cmd.extend(['-activation_bytes', activation_bytes])
         
-        cmd.extend(['-acodec', 'libmp3lame', '-ab', '128k', temp_mp3, '-y'])
+        cmd.extend(['-i', input_file])
+        cmd.extend(strategy['extra_flags'])
         
-        # Run conversion
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        # Set output codec if not copying or using raw format
+        if 'copy' not in strategy['extra_flags'] and '-f' not in strategy['extra_flags']:
+            if output_format.lower() == 'mp3':
+                cmd.extend(['-c:a', 'libmp3lame', '-b:a', '128k'])
+            elif output_format.lower() == 'm4b':
+                cmd.extend(['-c:a', 'aac', '-b:a', '128k'])
         
-        if result.returncode != 0:
-            raise Exception(f"FFmpeg error: {result.stderr}")
+        cmd.extend([temp_output, '-y'])
         
-        return temp_mp3
-    except Exception as e:
-        raise Exception(f"Conversion failed: {str(e)}")
+        app.logger.info(f"Running fallback FFmpeg command: {' '.join(cmd)}")
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                                  stdin=subprocess.DEVNULL, timeout=900,
+                                  encoding='utf-8', errors='replace')
+            
+            if result.returncode == 0:
+                app.logger.info(f"Fallback strategy '{strategy['name']}' succeeded!")
+                return temp_output
+            else:
+                app.logger.warning(f"Fallback strategy '{strategy['name']}' failed with return code {result.returncode}")
+                app.logger.warning(f"Stderr: {result.stderr[:500]}...")  # Truncate long error messages
+                
+        except subprocess.TimeoutExpired:
+            app.logger.error(f"Fallback strategy '{strategy['name']}' timed out")
+        except Exception as e:
+            app.logger.error(f"Fallback strategy '{strategy['name']}' failed with exception: {str(e)}")
+    
+    # If all strategies failed
+    raise Exception("All fallback conversion strategies failed. This .aax file may use an incompatible DRM scheme or have severe corruption.")
 
 def get_audio_duration(input_file):
     """Get audio duration in seconds using FFmpeg"""
@@ -185,63 +379,86 @@ def create_zip_archive(file_paths, zip_name):
 def index():
     return render_template('index.html')
 
+@app.route('/test')
+def test():
+    app.logger.info("Test route called!")
+    return jsonify({'status': 'Flask app is working!', 'timestamp': datetime.now().isoformat()})
+
 @app.route('/upload', methods=['POST'])
 def upload_file():
+    temp_dir = None
     try:
+        app.logger.info("--- New upload request received ---")
         if 'file' not in request.files:
+            app.logger.error("No file part in request")
             return jsonify({'error': 'No file provided'}), 400
         
         file = request.files['file']
         activation_bytes = request.form.get('activation_bytes', '')
-        
+        app.logger.info(f"File: {file.filename}, Activation Bytes: {'Yes' if activation_bytes else 'No'}")
+
         if file.filename == '':
+            app.logger.error("No file selected")
             return jsonify({'error': 'No file selected'}), 400
         
         if not allowed_file(file.filename):
+            app.logger.error(f"Invalid file type: {file.filename}")
             return jsonify({'error': 'Invalid file type. Only .aax and .aa files are allowed'}), 400
         
-        # Save uploaded file
         filename = secure_filename(file.filename)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_filename = f"{timestamp}_{filename}"
-        upload_path = os.path.join(UPLOAD_FOLDER, unique_filename)
+        
+        # Create a unique temporary directory for this conversion
+        temp_dir = tempfile.mkdtemp(prefix="conversion_")
+        app.logger.info(f"Created temporary directory: {temp_dir}")
+
+        # Save uploaded file to the temporary directory
+        upload_path = os.path.join(temp_dir, filename)
         file.save(upload_path)
+        app.logger.info(f"Saved uploaded file to: {upload_path}")
         
-        # Create output directory for this conversion
-        output_dir = os.path.join(OUTPUT_FOLDER, f"conversion_{timestamp}")
-        os.makedirs(output_dir, exist_ok=True)
+        # Get output format from form
+        output_format = request.form.get('output_format', 'mp3').lower()
+        if output_format not in ['mp3', 'm4b']:
+            output_format = 'mp3'  # Default fallback
         
-        # Convert Audible file to MP3
-        print(f"Converting {filename} to MP3...")
-        temp_mp3 = convert_audible_to_mp3(upload_path, output_dir, activation_bytes)
+        # Convert Audible file to specified format (no chunking at this stage)
+        app.logger.info(f"Converting {filename} to {output_format.upper()}...")
+        temp_output = convert_audible_file(upload_path, temp_dir, activation_bytes, output_format)
         
-        # Split into chunks
-        print(f"Splitting audio into {MAX_CHUNK_SIZE_MB}MB chunks...")
-        chunk_files = split_audio_file(temp_mp3, output_dir, MAX_CHUNK_SIZE_MB)
+        # Always create a single output file first
+        final_filename = f"{os.path.splitext(filename)[0]}.{output_format}"
+        final_path = os.path.join(OUTPUT_FOLDER, final_filename)
         
-        # Create ZIP archive
-        zip_name = f"{os.path.splitext(filename)[0]}_converted.zip"
-        zip_path = create_zip_archive(chunk_files, zip_name)
+        # Move the converted file to the final output directory
+        shutil.move(temp_output, final_path)
+        app.logger.info(f"Moved final MP3 to: {final_path}")
         
-        # Clean up temporary files
-        os.remove(upload_path)
-        os.remove(temp_mp3)
-        
-        # Get file info
-        total_chunks = len(chunk_files)
-        total_size_mb = sum(get_file_size_mb(chunk) for chunk in chunk_files)
-        
-        return jsonify({
+        total_size_mb = get_file_size_mb(final_path)
+
+        response_data = {
             'success': True,
             'message': 'File converted successfully',
-            'download_url': f'/download/{zip_name}',
-            'total_chunks': total_chunks,
+            'download_url': f'/download/{final_filename}',
+            'filename': final_filename,
+            'output_format': output_format.upper(),
             'total_size_mb': round(total_size_mb, 2),
-            'zip_name': zip_name
-        })
+            'can_chunk': total_size_mb > MAX_CHUNK_SIZE_MB  # Show chunk option if file is large
+        }
+
+        app.logger.info("Conversion process successful.")
+        return jsonify(response_data)
         
     except Exception as e:
+        app.logger.error(f"An error occurred during upload/conversion: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
+    finally:
+        # Cleanup: remove the temporary directory and its contents
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+                app.logger.info(f"Successfully cleaned up temporary directory: {temp_dir}")
+            except Exception as e:
+                app.logger.error(f"Failed to clean up temporary directory {temp_dir}: {e}")
 
 @app.route('/download/<filename>')
 def download_file(filename):
@@ -350,6 +567,58 @@ def test_activation_bytes_endpoint():
     except Exception as e:
         return jsonify({'error': f'Test failed: {str(e)}'}), 500
 
+@app.route('/chunk-file', methods=['POST'])
+def chunk_file():
+    """Chunk an existing MP3 file into smaller pieces"""
+    try:
+        data = request.get_json()
+        filename = data.get('filename')
+        
+        if not filename:
+            return jsonify({'error': 'filename required'}), 400
+        
+        file_path = os.path.join(OUTPUT_FOLDER, filename)
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'File not found'}), 404
+        
+        app.logger.info(f"Chunking file: {filename}")
+        
+        # Create temporary directory for chunking
+        temp_dir = tempfile.mkdtemp(prefix="chunking_")
+        
+        try:
+            # Split the MP3 file into chunks
+            chunk_files = split_audio_file(file_path, temp_dir, MAX_CHUNK_SIZE_MB)
+            app.logger.info(f"Created {len(chunk_files)} chunks.")
+            
+            # Create ZIP archive
+            base_name = os.path.splitext(filename)[0]
+            zip_name = f"{base_name}_chunked.zip"
+            zip_path = create_zip_archive(chunk_files, zip_name)
+            app.logger.info(f"Created ZIP archive: {zip_path}")
+            
+            total_chunks = len(chunk_files)
+            total_size_mb = sum(get_file_size_mb(chunk) for chunk in chunk_files)
+            
+            return jsonify({
+                'success': True,
+                'message': f'File chunked into {total_chunks} pieces successfully',
+                'download_url': f'/download/{zip_name}',
+                'zip_name': zip_name,
+                'total_chunks': total_chunks,
+                'total_size_mb': round(total_size_mb, 2)
+            })
+            
+        finally:
+            # Clean up temporary directory
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+                app.logger.info(f"Cleaned up chunking temp directory: {temp_dir}")
+        
+    except Exception as e:
+        app.logger.error(f"Chunking failed: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/save-activation-bytes', methods=['POST'])
 def save_activation_bytes_endpoint():
     """Save activation bytes to file for future use"""
@@ -375,6 +644,81 @@ def save_activation_bytes_endpoint():
         
     except Exception as e:
         return jsonify({'error': f'Save failed: {str(e)}'}), 500
+
+@app.route('/extract-activation-bytes', methods=['POST'])
+def extract_activation_bytes_endpoint():
+    """Extract activation bytes using audible-cli"""
+    try:
+        data = request.get_json()
+        method = data.get('method', 'cli')
+        
+        if method != 'cli':
+            return jsonify({
+                'success': False,
+                'error': 'Only audible-cli method is supported'
+            }), 400
+        
+        app.logger.info("Attempting to extract activation bytes using audible-cli...")
+        
+        # Try to use audible-cli to get activation bytes
+        try:
+            # Check if audible-cli is available
+            result = subprocess.run(['py', '-m', 'audible_cli', '--version'], 
+                                  capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                return jsonify({
+                    'success': False,
+                    'error': 'audible-cli not found. Please install it with: pip install audible-cli'
+                }), 400
+            
+            # Try to get activation bytes
+            result = subprocess.run(['py', '-m', 'audible_cli', 'activation-bytes'], 
+                                  capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                output = result.stdout.strip()
+                # Extract 8-character hex string from output
+                import re
+                hex_match = re.search(r'\b([0-9A-Fa-f]{8})\b', output)
+                if hex_match:
+                    activation_bytes = hex_match.group(1).upper()
+                    
+                    # Save to file for future use
+                    with open('activation_bytes.txt', 'w') as f:
+                        f.write(activation_bytes)
+                    
+                    app.logger.info(f"Successfully extracted activation bytes: {activation_bytes}")
+                    return jsonify({
+                        'success': True,
+                        'activation_bytes': activation_bytes,
+                        'message': 'Activation bytes extracted successfully'
+                    })
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Could not find activation bytes in audible-cli output'
+                    }), 400
+            else:
+                error_msg = result.stderr.strip() if result.stderr else 'Unknown error'
+                return jsonify({
+                    'success': False,
+                    'error': f'audible-cli failed: {error_msg}'
+                }), 400
+                
+        except subprocess.TimeoutExpired:
+            return jsonify({
+                'success': False,
+                'error': 'audible-cli command timed out'
+            }), 400
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': f'Error running audible-cli: {str(e)}'
+            }), 500
+            
+    except Exception as e:
+        app.logger.error(f"Activation bytes extraction failed: {str(e)}", exc_info=True)
+        return jsonify({'error': f'Extraction failed: {str(e)}'}), 500
 
 @app.route('/load-activation-bytes', methods=['GET'])
 def load_activation_bytes_endpoint():
